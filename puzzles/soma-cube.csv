@@ -1,0 +1,8 @@
+Soma Cube,Color,Positions
+V,red,000-100-010
+L,green,000-100-010-020
+T,yellow,000-010-020-110
+Z,blue,000-010-110-120
+twist-right,magenta,000-100-010-101
+twist-left,cyan,000-100-010-011
+pinnacle,white,000-100-010-001
