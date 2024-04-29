@@ -1,9 +1,7 @@
-use std::io;
-use std::path::PathBuf;
-
-use bedlam_cube::puzzle::Puzzle;
-use bedlam_cube::solver::Solver;
 use clap::Parser;
+use num_format::{Locale, ToFormattedString};
+use polycube::{puzzle::Puzzle, solver::Solver};
+use std::{io, path::PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -21,7 +19,21 @@ fn main() -> io::Result<()> {
 
     let puzzle = Puzzle::from_csv(args.puzzle)?;
 
-    let mut solver = Solver::build();
+    let mut solver = Solver::build(args.verbose);
     solver.begin(&puzzle);
+
+    // if args.verbose {
+    let duration = solver.start_time.unwrap().elapsed();
+    let rate = duration / solver.solutions.len() as u32;
+
+    println!(
+        "Solutions: {} Explored: {} Time: {:.2?} [rate {:.2?} per solution]",
+        solver.solutions.len().to_formatted_string(&Locale::en),
+        solver.explored.to_formatted_string(&Locale::en),
+        duration,
+        rate
+    );
+    // }
+
     Ok(())
 }

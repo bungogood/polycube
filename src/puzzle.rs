@@ -1,50 +1,25 @@
 use colored::*;
 use itertools::Itertools;
-use std::fmt::format;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::{fmt, io};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Bitset(pub u64);
 
 pub type Board = Bitset;
 pub type Placement = Bitset;
 
-impl fmt::Display for Bitset {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Use self.bitmask() to get the bitmask and format it
-        for y in 0..4 {
-            for z in 0..4 {
-                for x in 0..4 {
-                    let c = Coord { x, y, z }.to_index();
-                    if self.get(c) {
-                        write!(f, "X")?;
-                    } else {
-                        write!(f, ".")?;
-                    }
-                }
-                write!(f, " ")?;
-            }
-            writeln!(f, "")?;
-        }
-        Ok(())
-    }
-}
-
 impl Bitset {
-    pub const MAX: u64 = u64::MAX;
-    pub const DIMENSION: usize = 4;
-
-    pub fn new() -> Bitset {
+    pub fn empty() -> Bitset {
         Bitset(0)
     }
 
-    fn from_orientation(orientation: &Orientation) -> Bitset {
+    pub fn from_orientation(orientation: &Orientation, dim: &Coord) -> Bitset {
         let mut mask = Bitset(0);
         for coord in &orientation.0 {
-            mask.0 |= 1 << ((coord.z as u64) * 16 + (coord.y as u64) * 4 + (coord.x as u64))
+            mask.0 |= 1 << coord.z * dim.y * dim.x + coord.y * dim.x + coord.x
         }
         mask
     }
@@ -77,7 +52,7 @@ impl Bitset {
 #[derive(Clone)]
 pub struct Piece {
     pub name: String,
-    pub code: String,
+    pub id: String,
     pub base: Orientation,
     pub placements: Vec<Placement>,
 }
@@ -93,27 +68,24 @@ impl Eq for Piece {}
 
 impl fmt::Debug for Piece {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", format!("Piece {{ {: ^20} }}", self.name))
+        write!(f, "Piece {{ {} }}", self.name)
     }
 }
 impl Piece {
-    fn new(name: String, code: String, base: Orientation) -> Piece {
-        let mut piece = Piece {
+    fn new(name: String, id: String, base: Orientation) -> Piece {
+        Piece {
             name,
-            code,
+            id,
             base,
             placements: vec![],
-        };
-        let orientations = piece.generate_unique_orientations();
-        piece.compute_possible_positions(&orientations);
-        piece
+        }
     }
 
     pub fn placements(&self) -> &Vec<Placement> {
         &self.placements
     }
 
-    fn generate_unique_orientations(&mut self) -> Vec<Orientation> {
+    fn orientations(&self) -> Vec<Orientation> {
         // Has six faces
         // Each face can be in four rotations
         // Good resource: https://www.euclideanspace.com/maths/geometry/rotations/euler/examples/index.htm
@@ -144,36 +116,16 @@ impl Piece {
             orientations.iter().unique().map(|x| x.clone()).collect();
         unique_orientations
     }
-
-    fn compute_possible_positions(&mut self, unique_orientations: &Vec<Orientation>) {
-        for orientation in unique_orientations {
-            let x_bound = orientation.0.iter().map(|coord| coord.x).max().unwrap();
-            let y_bound = orientation.0.iter().map(|coord| coord.y).max().unwrap();
-            let z_bound = orientation.0.iter().map(|coord| coord.z).max().unwrap();
-            for x_off in 0..(4 - x_bound) {
-                for y_off in 0..(4 - y_bound) {
-                    for z_off in 0..(4 - z_bound) {
-                        let mut new_pos = orientation.clone();
-                        new_pos.0.iter_mut().for_each(|coord| {
-                            coord.x += x_off;
-                            coord.y += y_off;
-                            coord.z += z_off;
-                        });
-                        self.placements.push(Placement::from_orientation(&new_pos));
-                    }
-                }
-            }
-        }
-    }
 }
 
-#[derive(Clone)]
-struct Orientation(Vec<Coord>);
+#[derive(Clone, Eq, Debug)]
+pub struct Orientation(Vec<Coord>);
 
 impl Hash for Orientation {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Get the bitmask and feed it into the hasher
-        let placement = Placement::from_orientation(self);
+        let dim = Coord::new(4, 4, 4);
+        let placement = Placement::from_orientation(self, &dim);
         placement.0.hash(state);
     }
 }
@@ -181,26 +133,12 @@ impl Hash for Orientation {
 impl PartialEq for Orientation {
     fn eq(&self, other: &Self) -> bool {
         // Equality based on the bitmask
-        let placement_a = Placement::from_orientation(self);
-        let placement_b = Placement::from_orientation(other);
+        let dim = Coord::new(4, 4, 4);
+        let placement_a = Placement::from_orientation(self, &dim);
+        let placement_b = Placement::from_orientation(other, &dim);
         placement_a.0 == placement_b.0
     }
 }
-
-impl Eq for Orientation {}
-
-// impl fmt::Debug for Orientation {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         // Use self.bitmask() to get the bitmask and format it
-//         write!(f, "{:b}", self.bitmask())
-//     }
-// }
-// impl fmt::Display for Orientation {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         // Use self.bitmask() to get the bitmask and format it
-//         write!(f, "{:b}", self.bitmask())
-//     }
-// }
 
 impl Orientation {
     fn rotate(&mut self, x: usize, y: usize, z: usize) {
@@ -230,6 +168,60 @@ impl Orientation {
             .iter_mut()
             .for_each(|coord| coord.z = coord.z - min_z);
     }
+
+    pub fn offset(&self) -> Coord {
+        Coord {
+            x: self.0.iter().map(|c| c.x).min().unwrap(),
+            y: self.0.iter().map(|c| c.y).min().unwrap(),
+            z: self.0.iter().map(|c| c.z).min().unwrap(),
+        }
+    }
+
+    pub fn bounds(&self) -> Coord {
+        Coord {
+            x: self.0.iter().map(|c| c.x).max().unwrap(),
+            y: self.0.iter().map(|c| c.y).max().unwrap(),
+            z: self.0.iter().map(|c| c.z).max().unwrap(),
+        }
+    }
+
+    pub fn normalise(&self) -> Orientation {
+        let offset = self.offset();
+        let blocks = self
+            .0
+            .iter()
+            .map(|c| Coord {
+                x: c.x - offset.x,
+                y: c.y - offset.y,
+                z: c.z - offset.z,
+            })
+            .collect();
+        Orientation(blocks)
+    }
+
+    fn _rotate(&self, dir: Direction) -> Self {
+        let mut ori = self.clone();
+        for block in ori.0.iter_mut() {
+            match dir {
+                Direction::Next => {
+                    let tmp = block.y;
+                    block.y = block.z;
+                    block.z = -tmp;
+                }
+                Direction::Clk => {
+                    let tmp = block.x;
+                    block.x = block.z;
+                    block.z = -tmp;
+                }
+                Direction::CClk => {
+                    let tmp = block.z;
+                    block.z = block.x;
+                    block.x = -tmp;
+                }
+            }
+        }
+        ori
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -246,10 +238,6 @@ impl Coord {
             y: y as i64,
             z: z as i64,
         }
-    }
-
-    pub fn to_index(&self) -> usize {
-        (self.z * 16 + self.y * 4 + self.x) as usize
     }
 
     fn from_str(s: &str) -> Vec<Coord> {
@@ -300,10 +288,17 @@ impl Coord {
     }
 }
 
+enum Direction {
+    Next,
+    Clk,
+    CClk,
+}
+
 pub struct Puzzle {
     pub name: String,
     pub pieces: Vec<Piece>,
     pub dim: Coord,
+    pub full: Bitset,
 }
 
 impl Puzzle {
@@ -316,36 +311,31 @@ impl Puzzle {
             let color = record[1].parse().unwrap_or(Color::BrightRed);
             pieces.push(Piece::new(
                 record[0].color(color).to_string(),
-                format!("{:x}", idx).color(color).to_string(),
+                format!("{:X}", idx).color(color).to_string(),
                 Orientation(Coord::from_str(&record[2])),
             ));
         }
+
+        let mut blocks = 0;
+        for piece in &mut pieces {
+            blocks += piece.base.0.len();
+        }
+
+        let d = (blocks as f64).cbrt().round() as usize;
+        let dim = Coord::new(d, d, d);
+
+        for piece in &mut pieces {
+            piece.placements = Self::piece_placements(piece, &dim);
+        }
+
+        let full = Self::full(&dim);
+
         Ok(Puzzle {
             name: "Bedlam Cube".to_string(),
             pieces,
-            dim: Coord::new(4, 4, 4),
+            dim,
+            full,
         })
-    }
-
-    pub fn corners(&self) -> Vec<Coord> {
-        vec![
-            Coord::new(0, 0, 0),
-            Coord::new(Board::DIMENSION - 1, 0, 0),
-            Coord::new(0, Board::DIMENSION - 1, 0),
-            Coord::new(Board::DIMENSION - 1, Board::DIMENSION - 1, 0),
-            Coord::new(0, 0, Board::DIMENSION - 1),
-            Coord::new(Board::DIMENSION - 1, 0, Board::DIMENSION - 1),
-            Coord::new(0, Board::DIMENSION - 1, Board::DIMENSION - 1),
-            Coord::new(
-                Board::DIMENSION - 1,
-                Board::DIMENSION - 1,
-                Board::DIMENSION - 1,
-            ),
-        ]
-        .iter()
-        .rev()
-        .cloned()
-        .collect()
     }
 
     pub fn show(&self, arrangement: &Arrangement) {
@@ -354,10 +344,9 @@ impl Puzzle {
                 for x in 0..self.dim.x {
                     let index = z * self.dim.y * self.dim.x + y * self.dim.x + x;
                     if arrangement.occupied.get(index as usize) {
-                        for (id, bits) in arrangement.placements.iter() {
-                            if bits.get(index as usize) {
-                                // print!("{} ", self.pieces[*id].colored_id());
-                                print!("{} ", self.pieces[*id].code);
+                        for (pid, placement) in arrangement.placements.iter() {
+                            if placement.get(index as usize) {
+                                print!("{} ", self.pieces[*pid].id);
                                 break;
                             }
                         }
@@ -370,6 +359,103 @@ impl Puzzle {
             println!();
         }
     }
+
+    pub fn show_bit(&self, bits: &Bitset) {
+        for y in (0..self.dim.y).rev() {
+            for z in 0..self.dim.z {
+                for x in 0..self.dim.x {
+                    let index = z * self.dim.y * self.dim.x + y * self.dim.x + x;
+                    if bits.get(index as usize) {
+                        print!("X ");
+                    } else {
+                        print!(". ");
+                    }
+                }
+                print!("  ");
+            }
+            println!();
+        }
+    }
+
+    pub fn rotate_within(&self, base: &Orientation) -> Vec<Orientation> {
+        let mut orintations = Vec::new();
+        // let mut ori = self.normalise();
+        let mut ori = base.clone();
+        orintations.push(ori.clone());
+        let mut clk = true;
+        for _dir in 0..6 {
+            for _rot in 0..3 {
+                ori = if clk {
+                    ori._rotate(Direction::Clk)
+                } else {
+                    ori._rotate(Direction::CClk)
+                };
+
+                ori = Orientation(
+                    ori.0
+                        .iter()
+                        .map(|c| Coord {
+                            x: c.x.rem_euclid(self.dim.x),
+                            y: c.y.rem_euclid(self.dim.y),
+                            z: c.z.rem_euclid(self.dim.z),
+                        })
+                        .collect(),
+                );
+
+                println!("Rot: {:?}", ori);
+                // if orintations.iter().all(|o| !o.similar(&ori)) {
+                orintations.push(ori.clone());
+                // }
+            }
+            ori = ori._rotate(Direction::Next).normalise();
+            // if orintations.iter().all(|o| !o.similar(&ori)) {
+            orintations.push(ori.clone());
+            // }
+            clk = !clk;
+        }
+        // orintations.iter().map(|o| o.normalise_first()).collect()
+        orintations
+    }
+
+    pub fn piece_placements(piece: &Piece, dim: &Coord) -> Vec<Placement> {
+        piece
+            .orientations()
+            .iter()
+            .flat_map(|ori| Self::unique_placements(ori, dim))
+            .collect()
+    }
+
+    pub fn unique_placements(ori: &Orientation, dim: &Coord) -> Vec<Placement> {
+        let mut placements = vec![];
+        let bounds = ori.bounds();
+        for x_off in 0..(dim.x - bounds.x) {
+            for y_off in 0..(dim.y - bounds.y) {
+                for z_off in 0..(dim.z - bounds.z) {
+                    let mut new_pos = ori.clone();
+                    new_pos.0.iter_mut().for_each(|coord| {
+                        coord.x += x_off;
+                        coord.y += y_off;
+                        coord.z += z_off;
+                    });
+                    placements.push(Placement::from_orientation(&new_pos, dim));
+                }
+            }
+        }
+        placements
+    }
+
+    pub fn full(dim: &Coord) -> Bitset {
+        let mut full = Bitset::empty();
+        for x in 0..dim.x {
+            for y in 0..dim.y {
+                for z in 0..dim.z {
+                    let index = z * dim.y * dim.x + y * dim.x + x;
+                    full.set(index as usize);
+                }
+            }
+        }
+        full
+    }
 }
 
 #[derive(Clone)]
@@ -381,7 +467,7 @@ pub struct Arrangement {
 impl Arrangement {
     pub fn new() -> Arrangement {
         Arrangement {
-            occupied: Bitset::new(),
+            occupied: Bitset::empty(),
             placements: vec![],
         }
     }

@@ -1,79 +1,71 @@
-use crate::puzzle::{Arrangement, Bitset, Board, Coord, Placement, Puzzle};
+use num_format::{Locale, ToFormattedString};
+
+use crate::puzzle::{Arrangement, Bitset, Board, Coord, Orientation, Placement, Puzzle};
 
 use std::time::Instant;
 
 pub struct Solver {
-    total_solutions: usize,
-    solutions: Vec<Vec<(usize, Placement)>>,
-    start_time: Option<Instant>,
+    pub explored: usize,
+    pub solutions: Vec<Vec<(usize, Placement)>>,
+    pub start_time: Option<Instant>,
+    pub verbose: bool,
 }
 
 impl Solver {
-    pub fn build() -> Solver {
+    pub fn build(verbose: bool) -> Solver {
         Solver {
-            total_solutions: 0,
+            explored: 0,
             solutions: Vec::new(),
             start_time: None,
+            verbose,
         }
     }
 
-    fn add_solution(&mut self, puzzle: &Puzzle, arrangement: Arrangement, output: bool) {
-        let duration = if let Some(start) = self.start_time {
-            Instant::now().duration_since(start).as_secs()
-        } else {
-            0
-        };
+    fn add_solution(&mut self, puzzle: &Puzzle, arrangement: Arrangement) {
+        self.solutions.push(arrangement.placements.clone());
 
-        puzzle.show(&arrangement);
+        if self.verbose {
+            puzzle.show(&arrangement);
 
-        self.total_solutions += 1;
-        self.solutions.push(arrangement.placements);
-        if !output {
-            return;
+            let duration = self.start_time.unwrap().elapsed();
+            let rate = duration / self.solutions.len() as u32;
+            println!(
+                "Solutions: {} Explored: {} [rate {:.2?} per solution]",
+                self.solutions.len().to_formatted_string(&Locale::en),
+                self.explored.to_formatted_string(&Locale::en),
+                rate
+            )
         }
-
-        let s_per_solution = duration as f64 / self.total_solutions as f64;
-        println!(
-            "Total Solutions: {} [rate {:.2}s per solution]",
-            self.total_solutions, s_per_solution
-        )
     }
 
     pub fn has_full_coverage(&self, puzzle: &Puzzle, tmp: Bitset, pieces: &Vec<usize>) -> bool {
         let mut coverage = tmp.clone();
         for pid in pieces {
             let piece = &puzzle.pieces[*pid];
-            piece
-                .placements
-                .iter()
-                .filter(|placement: &&Placement| !tmp.intersects(**placement))
-                .for_each(|placement: &Placement| coverage = coverage.union(*placement));
+            for placement in piece.placements() {
+                if !tmp.intersects(*placement) {
+                    coverage = coverage.union(*placement);
+                    if coverage == puzzle.full {
+                        return true;
+                    }
+                }
+            }
         }
-        coverage.0 == Board::MAX
+        coverage == puzzle.full
     }
 
     pub fn can_pieces_fit(&self, puzzle: &Puzzle, tmp: Bitset, pieces: &Vec<usize>) -> bool {
         for pid in pieces {
-            let piece = &puzzle.pieces[*pid];
-            let length = piece
+            if puzzle.pieces[*pid]
                 .placements
                 .iter()
-                .filter(|placement: &&Placement| !tmp.intersects(**placement))
-                .count();
-            if length == 0 {
+                .all(|placement: &Placement| !tmp.intersects(*placement))
+            {
                 return false;
             }
         }
         return true;
     }
-
-    // pub fn overlaps_first_open(&self, tmp: Bitset, other: Bitset) -> bool {
-    //     let inverted_board = !tmp.0;
-    //     let ls0_mask = inverted_board & inverted_board.wrapping_neg();
-    //     let open_idx = ls0_mask.trailing_zeros();
-
-    //     (other.0 >> open_idx) & 1 == 1
-    // }
 
     fn new_cube(
         &self,
@@ -101,8 +93,10 @@ impl Solver {
         prev: usize,
         remaining: &Vec<usize>,
     ) {
+        self.explored += 1;
+
         if remaining.is_empty() {
-            self.add_solution(puzzle, arrangement.clone(), true);
+            self.add_solution(puzzle, arrangement.clone());
             return;
         }
 
@@ -115,6 +109,7 @@ impl Solver {
             let mut other_pieces = remaining.clone();
             other_pieces.remove(idx);
             let piece = &puzzle.pieces[*pid];
+
             for &placement in piece.placements() {
                 let new_board = arrangement.occupied.union(placement);
                 if !arrangement.occupied.intersects(placement)
@@ -130,56 +125,36 @@ impl Solver {
         }
     }
 
-    fn solve_corners(
-        &mut self,
-        puzzle: &Puzzle,
-        arrangement: &mut Arrangement,
-        corners: &Vec<Coord>,
-        remaining: &Vec<usize>,
-    ) {
-        let mut new_corners = corners.clone();
-        let corner = match new_corners.pop() {
-            Some(c) => c,
-            None => {
-                self.solve_board(puzzle, arrangement, 0, remaining);
-                return;
-            }
-        };
-
-        for (idx, pid) in remaining.iter().enumerate() {
-            let mut leftover = remaining.clone();
-            leftover.remove(idx);
-            let piece = &puzzle.pieces[*pid];
-            for &placement in piece.placements() {
-                let cidx = corner.to_index();
-                let new_board = arrangement.occupied.union(placement);
-                if placement.get(cidx)
-                    && !arrangement.occupied.intersects(placement)
-                    && self.has_full_coverage(puzzle, new_board, &leftover)
-                    && self.can_pieces_fit(puzzle, new_board, &leftover)
-                {
-                    arrangement.push(*pid, placement);
-                    self.solve_corners(puzzle, arrangement, &new_corners, &leftover);
-                    arrangement.pop();
-                }
-            }
-        }
-    }
-
     pub fn begin(&mut self, puzzle: &Puzzle) {
         self.start_time = Some(Instant::now());
-        let corners = puzzle.corners();
         let mut arrangement = Arrangement::new();
 
-        // let remaining = vec![0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let remaining: Vec<usize> = (0..puzzle.pieces.len()).collect();
+        let (cid, contrained) = puzzle
+            .pieces
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| p.placements.len())
+            .unwrap();
 
-        // arrangement.push(1, Bitset(0x0000000000000272));
-        self.solve_corners(puzzle, &mut arrangement, &corners, &remaining);
-        // arrangement.pop();
+        // println!("Constrained piece: {:?}", contrained);
 
-        // arrangement.push(1, Bitset(0x0000000002720000));
-        // self.solve_corners(puzzle, &mut arrangement, &corners, &remaining);
-        // arrangement.pop();
+        // for (idx, rot) in puzzle.rotate_within(&contrained.base).iter().enumerate() {
+        //     println!("Rot: {}", idx);
+        //     let bits = Bitset::from_orientation(rot);
+        //     puzzle.show_bit(&bits);
+        // }
+
+        let placements = vec![Bitset(0x0000000000000272), Bitset(0x0000000002720000)];
+
+        let remaining = (0..puzzle.pieces.len()).filter(|&x| x != cid).collect();
+
+        for placement in placements {
+            arrangement.push(cid, placement);
+            self.solve_board(puzzle, &mut arrangement, 0, &remaining);
+            arrangement.pop();
+        }
+
+        // let remaining = (0..puzzle.pieces.len()).collect();
+        // self.solve_board(puzzle, &mut arrangement, 0, &remaining);
     }
 }
